@@ -10,6 +10,8 @@
 
 `kvm_watcher`是一款基于eBPF的kvm虚拟机检测工具，其旨在使用户方便快捷在宿主机侧获取kvm虚拟机中的各种信息，报告所有正在运行的guest行为。
 
+![kvm watcher项目框图](https://gitee.com/nan-shuaibo/image/raw/master/202404251704350.png)
+
 目前，其实现的功能主要包括：
 
 - **[VM Exit 事件分析](./docs/kvm_exit.md)**
@@ -48,14 +50,19 @@ make clean
 `kvm_watcher`通过一系列命令参数来控制其具体行为：
 
 ```
+ _  ____     ____  __  __        ___  _____ ____ _   _ _____ ____  
+| |/ /\ \   / /  \/  | \ \      / / \|_   _/ ___| | | | ____|  _ \ 
+| ' /  \ \ / /| |\/| |  \ \ /\ / / _ \ | || |   | |_| |  _| | |_) |
+| . \   \ V / | |  | |   \ V  V / ___ \| || |___|  _  | |___|  _ < 
+|_|\_\   \_/  |_|  |_|    \_/\_/_/   \_\_| \____|_| |_|_____|_| \_|
 Usage: kvm_watcher [OPTION...]
 BPF program used for monitoring KVM event
-
 
   -c, --kvm_irqchip          Monitor the irqchip setting information in KVM
                              VM.
   -d, --mark_page_dirty      Monitor virtual machine dirty page information.
-  -e, --vm_exit              Monitoring the event of vm exit.
+  -e, --vm_exit              Monitoring the event of vm exit(including exiting
+                             to KVM and user mode).
   -f, --kvmmmu_page_fault    Monitoring the data of kvmmmu page fault.
   -h, --hypercall            Monitor the hypercall information in KVM VM 
   -i, --irq_inject           Monitor the virq injection information in KVM VM 
@@ -64,12 +71,20 @@ BPF program used for monitoring KVM event
                              option must be specified.)
   -n, --halt_poll_ns         Monitoring the variation in vCPU halt-polling
                              time.
+  -o, --vcpu_load            Monitoring the load of vcpu.
   -p, --vm_pid=PID           Specify the virtual machine pid to monitor.
   -t, --monitoring_time=SEC  Time for monitoring.
+  -T, --kvm_timer            Monitoring the KVM hv or software timer.
+  -v, --verbose              Verbose debug output.
   -w, --vcpu_wakeup          Monitoring the wakeup of vcpu.
   -?, --help                 Give this help list
       --usage                Give a short usage message
   -V, --version              Print program version
+
+Mandatory or optional arguments to long options are also mandatory or optional
+for any corresponding short options.
+
+Report bugs to <nanshuaibo811@163.com>.
 ```
 
 `-H`：输出帮助信息
@@ -94,6 +109,8 @@ BPF program used for monitoring KVM event
 
 `-l`：记录kvm相关ioctl系统调用命令字
 
+`-o`：统计VCPU在PCPU上的运行时间及相关信息
+
 `-p`：指定kvm虚拟机进程pid
 
 `-t`：监控时间
@@ -101,26 +118,33 @@ BPF program used for monitoring KVM event
 ## 四、代码结构
 
 ```
-├── docs                        //功能模块说明文档
+├── docs                         //功能模块说明文档
 │   ├── kvm_exit.md
 │   ├── kvm_hypercall.md
 │   ├── kvm_irq.md
 │   ├── kvm_mmu.md
 │   └── kvm_vcpu.md
-├── include                     //内核态bpf程序
-│   ├── kvm_exits.h
-│   ├── kvm_hypercall.h
-│   ├── kvm_ioctl.h
-│   ├── kvm_irq.h
-│   ├── kvm_mmu.h
-│   ├── kvm_vcpu.h
-│   └── kvm_watcher.h           //公共头文件
+├── include
+│   ├── bpf                      //内核态bpf程序
+│   │   ├── kvm_exits.h
+│   │   ├── kvm_hypercall.h
+│   │   ├── kvm_ioctl.h
+│   │   ├── kvm_irq.h
+│   │   ├── kvm_mmu.h
+│   │   └── kvm_vcpu.h
+│   ├── common.h           		  //内核态和用户态公共头文件
+│   └── helpers					        //用户态帮助函数
+│       ├── trace_helpers.h
+│       └── uprobe_helpers.h
 ├── Makefile                    //编译脚本
 ├── README.md
-├── src                         
-│   ├── kvm_watcher.bpf.c        //内核态bpf程序入口
-│   └── kvm_watcher.c            //用户态bpf程序
-└── temp                         //临时文件目录
+├── src
+│   ├── helpers					        //用户态帮助函数
+│   │   ├── trace_helpers.c
+│   │   └── uprobe_helpers.c
+│   ├── kvm_watcher.bpf.c       //内核态bpf程序入口
+│   └── kvm_watcher.c           //用户态bpf程序
+└── temp                        //临时文件目录
 ```
 
 ## 五、测试
@@ -145,7 +169,7 @@ graph TD;
   要运行测试，请执行以下命令：
 
   ```
-  make test
+  make deps test
   ```
 
   这将自动执行上述测试流程，并在结束后提供测试结果。

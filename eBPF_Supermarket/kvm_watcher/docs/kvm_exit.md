@@ -1,6 +1,8 @@
 # kvm_exit
 
-考虑到频繁的虚拟机退出事件可能会导致性能问题，kvm_watcher中的kvm_exit子功能通过显示详细的退出原因和在一台主机上运行的所有vm的每个虚拟机的vcpu上的退出计数及处理时延，可以捕获和分析vm exit事件，该工具旨在定位频繁退出的原因（如EPT_VIOLATION、EPT_MISCONFIG、PML_FULL等）。
+考虑到频繁的虚拟机退出事件可能会导致性能问题，kvm_watcher中的kvm_exit子功能通过显示详细的退出原因和在一台主机上运行的所有vm的每个虚拟机的vcpu上的退出计数及处理时延，可以捕获和分析vm exit事件，该工具旨在定位频繁退出的原因（如EPT_VIOLATION、EPT_MISCONFIG、PML_FULL等）,在vm exit基础上，如果kvm这个时候因为某些原因，需要退出到用户态的hypervisor(比如qemu)，kvm就要设置KVM_EXIT_XXX，此工具包含了这两部分exit reason。
+
+![kvm exit](https://gitee.com/nan-shuaibo/image/raw/master/202404251707665.png)
 
 ## 原理介绍
 
@@ -30,19 +32,23 @@
 
 ![VM entry 与 VM exit](https://ctf-wiki.org/pwn/virtualization/basic-knowledge/figure/vm-entry-and-exit.png)
 
+### kvm_exit与kvm_userspace_exit
 
+[vm exit和userspace exit](https://blog.csdn.net/weixin_46324627/article/details/136325212?spm=1001.2014.3001.5501)
 
 ## 挂载点
 
-| 类型       | 名称      |
-| ---------- | --------- |
-| tracepoint | kvm_exit  |
-| tracepoint | kvm_entry |
+| 类型       | 名称                    |
+| ---------- | ----------------------- |
+| tracepoint | kvm_exit                |
+| tracepoint | kvm_entry               |
+| fentry     | kvm_arch_vcpu_ioctl_run |
+| tracepoint | kvm_userspace_exit      |
 
 ## 示例输出
 
 4391为主机上的虚拟机进程，4508、4509、4510...分别是虚拟机中的vcpu子进程，每隔两秒输出虚拟机中产生的exit事件及其处理延时等信息。
-
+结果会以进程号（VM的唯一标识）以及线程号（VM中每个VCPU的唯一标识）的优先级依次从小到大的顺序输出。
 ```
 ubuntu@rd350x:~/nans/lmp/eBPF_Supermarket/kvm_watcher$ sudo ./kvm_watcher -e
 

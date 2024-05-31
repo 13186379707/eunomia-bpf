@@ -49,7 +49,7 @@ bool symbol_parser::load_pid_maps(int pid)
     }
 
     proc_vma proc;
-    char fn[256];
+    char fn[23];
     sprintf(fn, "/proc/%d/maps", pid);
     FILE *fp = fopen(fn, "r");
     if (!fp) {
@@ -335,6 +335,11 @@ bool symbol_parser::putin_symbol_cache(int tgid, unsigned long addr, std::string
     return false;
 }
 
+/// @brief 找到指定进程中的虚拟地址对应的在可执行文件中相对于文件开始的偏移，赋给sym.ip
+/// @param pid 指定进程的pid
+/// @param sym 提供进程虚拟地址
+/// @param file 文件信息
+/// @return 成功找到返回true
 bool symbol_parser::get_symbol_info(int pid, symbol &sym, elf_file &file)
 {
     std::map<int, proc_vma>::iterator proc_vma_info;
@@ -439,7 +444,7 @@ bool symbol_parser::find_vma(pid_t pid, vma &vm)
 
     vm.start = vma_iter->second.start;
     vm.end = vma_iter->second.end;
-    vm.name = vma_iter->second.name;
+    vm.name = "/proc/" + std::to_string(pid) + "/root/" + vma_iter->second.name;
     vm.offset = vma_iter->second.offset;
 
     return true;
