@@ -17,13 +17,15 @@
 // 包装用于采集调用栈数据的eBPF程序，规定一些抽象接口和通用变量
 
 #include "bpf_wapper/eBPFStackCollector.h"
-#include "sa_user.h"
-#include "dt_symbol.h"
+#include "user.h"
+#include "trace.h"
 
 #include <sstream>
 #include <map>
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
+#include <linux/version.h>
+#include <cxxabi.h>
 
 std::string getLocalDateTime(void)
 {
@@ -53,25 +55,44 @@ std::vector<CountItem> *StackCollector::sortedCountList(void)
     auto val_size = bpf_map__value_size(psid_count_map);
     auto value_fd = bpf_object__find_map_fd_by_name(obj, "psid_count_map");
 
+    auto D = new std::vector<CountItem>();
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 5, 0)
+    for (psid prev_key = {0}, curr_key = {0};; prev_key = curr_key)
+    {
+        if (bpf_map_get_next_key(value_fd, &prev_key, &curr_key))
+        {
+            if (errno != ENOENT)
+                perror("map get next key error");
+            break; // no more keys, done
+        }
+        if (showDelta)
+            bpf_map_delete_elem(value_fd, &prev_key);
+        char val[val_size];
+        memset(val, 0, val_size);
+        if (bpf_map_lookup_elem(value_fd, &curr_key, &val))
+        {
+            if (errno != ENOENT)
+            {
+                perror("map lookup error");
+                break;
+            }
+            continue;
+        }
+        CountItem d(curr_key, count_values(val));
+        D->insert(std::lower_bound(D->begin(), D->end(), d), d);
+    }
+#else
     auto keys = new psid[MAX_ENTRIES];
     auto vals = new char[MAX_ENTRIES * val_size];
     uint32_t count = MAX_ENTRIES;
     psid next_key;
     int err;
     if (showDelta)
-    {
         err = bpf_map_lookup_and_delete_batch(value_fd, NULL, &next_key, keys, vals, &count, NULL);
-    }
     else
-    {
         err = bpf_map_lookup_batch(value_fd, NULL, &next_key, keys, vals, &count, NULL);
-    }
     if (err == EFAULT)
-    {
         return NULL;
-    }
-
-    auto D = new std::vector<CountItem>();
     for (uint32_t i = 0; i < count; i++)
     {
         CountItem d(keys[i], count_values(vals + val_size * i));
@@ -79,6 +100,7 @@ std::vector<CountItem> *StackCollector::sortedCountList(void)
     }
     delete[] keys;
     delete[] vals;
+#endif
     return D;
 };
 
@@ -121,39 +143,36 @@ StackCollector::operator std::string()
             auto trace_fd = bpf_object__find_map_fd_by_name(obj, "sid_trace_map");
             if (id.usid > 0 && traces.find(id.usid) == traces.end())
             {
-                bpf_map_lookup_elem(trace_fd, &id.usid, trace);
-                for (p = trace + MAX_STACKS - 1; !*p; p--)
-                    ;
-                std::vector<std::string> sym_trace(p - trace + 1);
-                for (int i = 0; p >= trace; p--)
+                syms = syms_cache__get_syms(syms_cache, id.pid);
+                if (!syms)
+                    fprintf(stderr, "failed to get syms\n");
+                else
                 {
-                    uint64_t &addr = *p;
-                    symbol sym;
-                    sym.reset(addr);
-                    elf_file file;
-                    if (g_symbol_parser.find_symbol_in_cache(id.pid, addr, sym.name))
+                    bpf_map_lookup_elem(trace_fd, &id.usid, trace);
+                    for (p = trace + MAX_STACKS - 1; !*p; p--)
                         ;
-                    else if (g_symbol_parser.get_symbol_info(id.pid, sym, file) && g_symbol_parser.find_elf_symbol(sym, file, id.pid, id.pid))
+                    std::vector<std::string> sym_trace(p - trace + 1);
+                    for (int i = 0; p >= trace; p--)
                     {
-                        if (sym.name[0] == '_' && sym.name[1] == 'Z')
-                            // 代表是C++符号，则调用demangle解析
-                            sym.name = demangleCppSym(sym.name);
-                        std::stringstream ss("");
-                        ss << "+0x" << std::hex << (sym.ip - sym.start);
-                        sym.name += ss.str();
-                        clearSpace(sym.name);
-                        g_symbol_parser.putin_symbol_cache(id.pid, addr, sym.name);
+                        struct sym *sym = syms__map_addr(syms, *p);
+                        if (sym)
+                        {
+                            if (sym->name[0] == '_' && sym->name[1] == 'Z')
+                            {
+                                char *demangled = abi::__cxa_demangle(sym->name, NULL, NULL, NULL);
+                                if (demangled)
+                                {
+                                    clearSpace(demangled);
+                                    sym->name = demangled;
+                                }
+                            }
+                            sym_trace[i++] = std::string(sym->name) + "+" + std::to_string(sym->offset);
+                        }
+                        else
+                            sym_trace[i++] = "[unknown]";
                     }
-                    else
-                    {
-                        std::stringstream ss("");
-                        ss << "0x" << std::hex << sym.ip;
-                        sym.name = ss.str();
-                        g_symbol_parser.putin_symbol_cache(id.pid, addr, sym.name);
-                    }
-                    sym_trace[i++] = sym.name;
+                    traces[id.usid] = sym_trace;
                 }
-                traces[id.usid] = sym_trace;
             }
             if (id.ksid > 0 && traces.find(id.ksid) == traces.end())
             {
@@ -163,22 +182,9 @@ StackCollector::operator std::string()
                 std::vector<std::string> sym_trace(p - trace + 1);
                 for (int i = 0; p >= trace; p--)
                 {
-                    uint64_t &addr = *p;
-                    symbol sym;
-                    sym.reset(addr);
-                    std::stringstream ss("");
-                    if (g_symbol_parser.find_kernel_symbol(sym))
-                    {
-                        ss << "+0x" << std::hex << (sym.ip - sym.start);
-                        sym.name += ss.str();
-                        clearSpace(sym.name);
-                    }
-                    else
-                    {
-                        ss << "0x" << std::hex << addr;
-                        sym.name = ss.str();
-                    }
-                    sym_trace[i++] = sym.name;
+                    const struct ksym *ksym = ksyms__map_addr(ksyms, *p);
+                    sym_trace[i++] = ksym ? std::string(ksym->name) + "+" + std::to_string(*p - ksym->addr)
+                                          : "[unknown]";
                 }
                 traces[id.ksid] = sym_trace;
             }
